@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 from typing import Any, Mapping
 
+import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
 import pyarrow.fs as fs
@@ -90,6 +91,9 @@ def _build_filter_expression(
         if column_name not in dataset.schema.names:
             raise ValueError(f"Unknown filter column: {column_name}")
 
+        field_type = dataset.schema.field(column_name).type
+        is_string_type = pa.types.is_string(field_type) or pa.types.is_large_string(field_type)
+
         if isinstance(filter_value, (list, tuple, set, frozenset)):
             values = list(filter_value)
             if not values:
@@ -99,6 +103,8 @@ def _build_filter_expression(
             condition = pc.field(column_name).isin(values)
         elif filter_value is None:
             condition = pc.field(column_name).is_null()
+        elif is_string_type and isinstance(filter_value, str) and filter_value.strip():
+            condition = pc.match_substring(pc.field(column_name), filter_value)
         else:
             condition = pc.field(column_name) == filter_value
 
