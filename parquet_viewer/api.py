@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+import pyarrow as pa
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -14,6 +15,8 @@ class ViewRequest(BaseModel):
     parquet_url: str = Field(..., min_length=1)
     max_rows: int = Field(default=25, ge=1, le=200)
     columns: list[str] | None = None
+    filters: dict[str, Any] | None = None
+    format: str = Field(default="json_columns", pattern="^(json_columns|arrow)$")
 
 
 class SchemaRequest(BaseModel):
@@ -27,14 +30,6 @@ class SchemaColumn(BaseModel):
 
 class SchemaResponse(BaseModel):
     columns: list[SchemaColumn]
-
-
-class ViewResponse(BaseModel):
-    total_rows: int
-    displayed_rows: int
-    columns: list[str]
-    data: list[dict[str, Any]]
-    output_file: str | None = None
 
 
 app = FastAPI(title="Parquet Viewer API")
@@ -68,16 +63,26 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/view", response_model=ViewResponse)
-def get_view_endpoint(request: ViewRequest) -> dict[str, Any]:
+@app.post("/view")
+def get_view_endpoint(request: ViewRequest) -> Any:
     try:
         service = ParquetViewService(request.parquet_url)
-        payload = service.get_view(
+        table = service.get_view(
             columns=request.columns,
+            filters=request.filters,
             max_rows=request.max_rows,
-            logs=False,
         )
-        return _to_json_safe(payload)
+
+        if request.format == "arrow":
+            sink = pa.BufferOutputStream()
+            with pa.ipc.new_stream(sink, table.schema) as writer:
+                writer.write_table(table)
+            return Response(
+                content=sink.getvalue().to_pybytes(),
+                media_type="application/vnd.apache.arrow.stream",
+            )
+
+        return {"data": _to_json_safe(table.to_pydict())}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
