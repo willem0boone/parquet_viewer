@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 import csv
 import json
+import os
 from typing import Any, Mapping
 
 import pyarrow as pa
@@ -10,7 +11,7 @@ import pyarrow.dataset as ds
 
 from ._utils import _build_filter_expression, _resolve_columns, _resolve_dataset
 
-DatasetInput = ds.Dataset | str
+DatasetInput = ds.Dataset | str | os.PathLike[str]
 FilterInput = Mapping[str, Any] | list[tuple[str, Any]] | None
 
 __all__ = [

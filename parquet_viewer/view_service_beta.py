@@ -10,15 +10,18 @@ Advantages over PyArrow:
 
 from __future__ import annotations
 
+import os
 from typing import Any, Mapping
 import pyarrow as pa
+
+from ._utils import _normalize_parquet_source
 
 try:
     import duckdb
 except ImportError:
     raise ImportError("duckdb must be installed to use DuckDBViewService. pip install duckdb")
 
-DatasetInput = str
+DatasetInput = str | os.PathLike[str]
 FilterInput = Mapping[str, Any] | list[tuple[str, Any]] | None
 
 __all__ = [
@@ -32,7 +35,7 @@ __all__ = [
 
 def _build_where_clause(filters: FilterInput) -> tuple[str, tuple]:
     """Build WHERE clause from filter dict/list for DuckDB SQL.
-
+    
     Returns
     -------
     tuple[str, tuple]
@@ -89,7 +92,7 @@ class DuckDBViewService:
         con : duckdb.DuckDBPyConnection, optional
             Reuse existing DuckDB connection; if None, creates :memory: connection.
         """
-        self._parquet_url = parquet
+        self._parquet_source = _normalize_parquet_source(parquet)
         self._con = con or duckdb.connect(":memory:")
         self._table_alias = "data"
         self._schema_cache: dict[str, str] | None = None
@@ -97,11 +100,11 @@ class DuckDBViewService:
     def _get_columns(self) -> list[str]:
         """Fetch column names from parquet without full load."""
         try:
-            query = f"SELECT * FROM read_parquet('{self._parquet_url}') LIMIT 0"
-            result = self._con.execute(query).fetch_arrow_table()
+            query = "SELECT * FROM read_parquet(?) LIMIT 0"
+            result = self._con.execute(query, [self._parquet_source]).fetch_arrow_table()
             return result.column_names
         except Exception as e:
-            raise RuntimeError(f"Failed to read schema from {self._parquet_url}: {e}")
+            raise RuntimeError(f"Failed to read schema from {self._parquet_source}: {e}")
 
     def get_schema(self) -> dict[str, str]:
         """
@@ -115,8 +118,8 @@ class DuckDBViewService:
         if self._schema_cache is not None:
             return self._schema_cache
 
-        query = f"SELECT * FROM read_parquet('{self._parquet_url}') LIMIT 0"
-        result = self._con.execute(query).fetch_arrow_table()
+        query = "SELECT * FROM read_parquet(?) LIMIT 0"
+        result = self._con.execute(query, [self._parquet_source]).fetch_arrow_table()
         schema = {col: str(result.schema.field(col).type) for col in result.column_names}
         self._schema_cache = schema
         return schema
@@ -164,15 +167,13 @@ class DuckDBViewService:
 
         query = f"""
             SELECT {col_list}
-            FROM read_parquet('{self._parquet_url}')
+            FROM read_parquet(?)
             {where_sql}
             {limit_sql}
         """
 
-        if params:
-            result = self._con.execute(query, params).fetch_arrow_table()
-        else:
-            result = self._con.execute(query).fetch_arrow_table()
+        query_params = [self._parquet_source, *params]
+        result = self._con.execute(query, query_params).fetch_arrow_table()
 
         return result
 

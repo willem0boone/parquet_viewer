@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_URL = "https://s3.waw3-1.cloudferro.com/emodnet/emodnet_biology/12639/marine_biodiversity_observations_2026-02-26.parquet";
+const COLUMN_PAGE_SIZE = 10;
 
 export default function App() {
   const [parquetUrl, setParquetUrl] = useState(DEFAULT_URL);
@@ -11,6 +12,9 @@ export default function App() {
   const [rendering, setRendering] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
+  const [activeParquetUrl, setActiveParquetUrl] = useState("");
+  const [activeColumns, setActiveColumns] = useState([]);
+  const [columnOffset, setColumnOffset] = useState(0);
 
   const dropdownRef = useRef(null);
   const loadedSchemaUrlRef = useRef("");
@@ -18,6 +22,8 @@ export default function App() {
   const allColumnNames = useMemo(() => schemaColumns.map((item) => item.name), [schemaColumns]);
   const selectedCount = draftSelectedColumns.length;
   const totalCount = allColumnNames.length;
+  const canGoPrevious = columnOffset > 0;
+  const canGoNext = columnOffset + COLUMN_PAGE_SIZE < activeColumns.length;
 
   useEffect(() => {
     function onClickOutside(event) {
@@ -74,6 +80,28 @@ export default function App() {
     return body.data || {};
   }
 
+  function getVisibleColumns(columnsToRender, offset) {
+    return columnsToRender.slice(offset, offset + COLUMN_PAGE_SIZE);
+  }
+
+  async function renderPage(url, columnsToRender, offset) {
+    const visibleColumns = getVisibleColumns(columnsToRender, offset);
+    const data = await renderData(url, visibleColumns);
+    if (!data) {
+      setResult(null);
+      return;
+    }
+
+    const rows = toRows(data, visibleColumns);
+    setResult({
+      columns: visibleColumns,
+      rows,
+      totalColumns: columnsToRender.length,
+      startIndex: offset,
+      endIndex: offset + visibleColumns.length,
+    });
+  }
+
   function toRows(columnarData, columns) {
     const firstColumn = columns[0];
     const rowCount = firstColumn ? (columnarData[firstColumn] || []).length : 0;
@@ -106,11 +134,6 @@ export default function App() {
       return;
     }
 
-    if (draftSelectedColumns.length === 0) {
-      setError("Select at least one column.");
-      return;
-    }
-
     setRendering(true);
     setError("");
 
@@ -125,17 +148,54 @@ export default function App() {
       }
 
       if (columnsToRender.length === 0) {
-        setError("No columns found in parquet schema.");
+        setError("Select at least one column.");
         setResult(null);
         return;
       }
 
-      const data = await renderData(trimmedUrl, columnsToRender);
-      if (data) {
-        const columns = columnsToRender;
-        const rows = toRows(data, columns);
-        setResult({ columns, rows });
-      }
+      setActiveParquetUrl(trimmedUrl);
+      setActiveColumns(columnsToRender);
+      setColumnOffset(0);
+      await renderPage(trimmedUrl, columnsToRender, 0);
+    } catch (err) {
+      setError(err.message || "Failed to render");
+    } finally {
+      setRendering(false);
+    }
+  }
+
+  async function handleNextColumns() {
+    if (!canGoNext || rendering) {
+      return;
+    }
+
+    const nextOffset = Math.min(
+      columnOffset + COLUMN_PAGE_SIZE,
+      Math.max(0, activeColumns.length - COLUMN_PAGE_SIZE)
+    );
+    setRendering(true);
+    setError("");
+    try {
+      setColumnOffset(nextOffset);
+      await renderPage(activeParquetUrl, activeColumns, nextOffset);
+    } catch (err) {
+      setError(err.message || "Failed to render");
+    } finally {
+      setRendering(false);
+    }
+  }
+
+  async function handlePreviousColumns() {
+    if (!canGoPrevious || rendering) {
+      return;
+    }
+
+    const nextOffset = Math.max(0, columnOffset - COLUMN_PAGE_SIZE);
+    setRendering(true);
+    setError("");
+    try {
+      setColumnOffset(nextOffset);
+      await renderPage(activeParquetUrl, activeColumns, nextOffset);
     } catch (err) {
       setError(err.message || "Failed to render");
     } finally {
@@ -161,6 +221,9 @@ export default function App() {
               setDraftSelectedColumns([]);
               setResult(null);
               setError("");
+              setActiveParquetUrl("");
+              setActiveColumns([]);
+              setColumnOffset(0);
               loadedSchemaUrlRef.current = "";
             }}
           />
@@ -206,7 +269,21 @@ export default function App() {
         </div>
 
         {error && <div className="error">{error}</div>}
-        {result && <div className="meta">Showing {result.rows.length} rows, {result.columns.length} columns</div>}
+        {result && (
+          <div className="meta-row">
+            <div className="meta">
+              Showing {result.rows.length} rows, columns {result.startIndex + 1}-{result.endIndex} of {result.totalColumns}
+            </div>
+            <div className="column-pager">
+              <button type="button" onClick={handlePreviousColumns} disabled={!canGoPrevious || rendering}>
+                &lt; Previous
+              </button>
+              <button type="button" onClick={handleNextColumns} disabled={!canGoNext || rendering}>
+                Next &gt;
+              </button>
+            </div>
+          </div>
+        )}
       </header>
 
       <section className="table-panel">

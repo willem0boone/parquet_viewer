@@ -3,20 +3,18 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-import pyarrow as pa
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from .view_service import ParquetViewService
+from .view_service_beta import DuckDBViewService
 
 
 class ViewRequest(BaseModel):
     parquet_url: str = Field(..., min_length=1)
     max_rows: int = Field(default=25, ge=1, le=200)
     columns: list[str] | None = None
-    filters: dict[str, Any] | None = None
-    format: str = Field(default="json_columns", pattern="^(json_columns|arrow)$")
+    filters: dict[str, str] | None = None
 
 
 class SchemaRequest(BaseModel):
@@ -30,6 +28,14 @@ class SchemaColumn(BaseModel):
 
 class SchemaResponse(BaseModel):
     columns: list[SchemaColumn]
+
+
+class ViewResponse(BaseModel):
+    total_rows: int
+    displayed_rows: int
+    columns: list[str]
+    data: dict[str, list[Any]]
+    output_file: str | None = None
 
 
 app = FastAPI(title="Parquet Viewer API")
@@ -63,26 +69,27 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/view")
-def get_view_endpoint(request: ViewRequest) -> Any:
+@app.post("/view", response_model=ViewResponse)
+def get_view_endpoint(request: ViewRequest) -> dict[str, Any]:
     try:
-        service = ParquetViewService(request.parquet_url)
+        service = DuckDBViewService(request.parquet_url)
         table = service.get_view(
             columns=request.columns,
             filters=request.filters,
             max_rows=request.max_rows,
         )
-
-        if request.format == "arrow":
-            sink = pa.BufferOutputStream()
-            with pa.ipc.new_stream(sink, table.schema) as writer:
-                writer.write_table(table)
-            return Response(
-                content=sink.getvalue().to_pybytes(),
-                media_type="application/vnd.apache.arrow.stream",
-            )
-
-        return {"data": _to_json_safe(table.to_pydict())}
+        columnar_data = {
+            column_name: table.column(column_name).to_pylist()
+            for column_name in table.column_names
+        }
+        payload = {
+            "total_rows": table.num_rows,
+            "displayed_rows": table.num_rows,
+            "columns": table.column_names,
+            "data": columnar_data,
+            "output_file": None,
+        }
+        return _to_json_safe(payload)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -90,9 +97,9 @@ def get_view_endpoint(request: ViewRequest) -> Any:
 @app.post("/schema", response_model=SchemaResponse)
 def get_schema_endpoint(request: SchemaRequest) -> dict[str, list[dict[str, str]]]:
     try:
-        service = ParquetViewService(request.parquet_url)
-        schema = service.dataset.schema
-        columns = [{"name": field.name, "dtype": str(field.type)} for field in schema]
+        service = DuckDBViewService(request.parquet_url)
+        schema = service.get_schema()
+        columns = [{"name": name, "dtype": dtype} for name, dtype in schema.items()]
         return {"columns": columns}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

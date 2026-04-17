@@ -148,6 +148,24 @@ button:disabled {
   color: #4b5563;
 }
 
+.meta-row {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.column-pager {
+  display: flex;
+  gap: 8px;
+}
+
+.column-pager button {
+  padding: 7px 10px;
+  background: #1f2937;
+}
+
 .table-panel {
   flex: 1 1 auto;
   min-height: 0;
