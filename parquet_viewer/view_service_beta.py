@@ -129,6 +129,7 @@ class DuckDBViewService:
         columns: list[str] | None = None,
         filters: FilterInput = None,
         max_rows: int = 25,
+        row_offset: int = 0,
     ) -> pa.Table:
         """
         Read parquet preview with column selection and filters.
@@ -141,6 +142,8 @@ class DuckDBViewService:
             Filter predicates.
         max_rows : int
             Maximum rows to return.
+        row_offset : int
+            Number of matching rows to skip before returning data.
 
         Returns
         -------
@@ -149,6 +152,8 @@ class DuckDBViewService:
         """
         if max_rows < 0:
             raise ValueError("max_rows must be >= 0")
+        if row_offset < 0:
+            raise ValueError("row_offset must be >= 0")
 
         schema = self.get_schema()
         all_cols = list(schema.keys())
@@ -164,12 +169,14 @@ class DuckDBViewService:
         where_sql = f"WHERE {where_clause}" if where_clause else ""
 
         limit_sql = f"LIMIT {max_rows}" if max_rows > 0 else ""
+        offset_sql = f"OFFSET {row_offset}" if row_offset > 0 else ""
 
         query = f"""
             SELECT {col_list}
             FROM read_parquet(?)
             {where_sql}
             {limit_sql}
+            {offset_sql}
         """
 
         query_params = [self._parquet_source, *params]
@@ -183,12 +190,14 @@ def get_view(
     columns: list[str] | None = None,
     filters: FilterInput = None,
     max_rows: int = 25,
+    row_offset: int = 0,
 ) -> pa.Table:
     """Convenience entrypoint for DuckDB view service."""
     return DuckDBViewService(parquet).get_view(
         columns=columns,
         filters=filters,
         max_rows=max_rows,
+        row_offset=row_offset,
     )
 
 

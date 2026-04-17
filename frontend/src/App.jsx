@@ -3,27 +3,47 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 const API_BASE = "http://127.0.0.1:8000";
 const DEFAULT_URL = "https://s3.waw3-1.cloudferro.com/emodnet/emodnet_biology/12639/marine_biodiversity_observations_2026-02-26.parquet";
 const COLUMN_PAGE_SIZE = 10;
+const ROW_PAGE_SIZE = 50;
+
+function compareColumnNames(a, b) {
+  return a.localeCompare(b, undefined, { sensitivity: "base" });
+}
 
 export default function App() {
   const [parquetUrl, setParquetUrl] = useState(DEFAULT_URL);
   const [schemaColumns, setSchemaColumns] = useState([]);
   const [draftSelectedColumns, setDraftSelectedColumns] = useState([]);
+  const [draftFilterValues, setDraftFilterValues] = useState({});
+  const [appliedFilterValues, setAppliedFilterValues] = useState({});
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [rendering, setRendering] = useState(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState(null);
   const [activeParquetUrl, setActiveParquetUrl] = useState("");
   const [activeColumns, setActiveColumns] = useState([]);
+  const [activeFilters, setActiveFilters] = useState({});
   const [columnOffset, setColumnOffset] = useState(0);
+  const [rowOffset, setRowOffset] = useState(0);
 
   const dropdownRef = useRef(null);
   const loadedSchemaUrlRef = useRef("");
 
-  const allColumnNames = useMemo(() => schemaColumns.map((item) => item.name), [schemaColumns]);
+  const sortedSchemaColumns = useMemo(
+    () => [...schemaColumns].sort((left, right) => compareColumnNames(left.name, right.name)),
+    [schemaColumns]
+  );
+  const allColumnNames = useMemo(() => sortedSchemaColumns.map((item) => item.name), [sortedSchemaColumns]);
+  const schemaByName = useMemo(
+    () => Object.fromEntries(schemaColumns.map((item) => [item.name, item])),
+    [schemaColumns]
+  );
+  const selectedColumnsSet = useMemo(() => new Set(draftSelectedColumns), [draftSelectedColumns]);
   const selectedCount = draftSelectedColumns.length;
   const totalCount = allColumnNames.length;
   const canGoPrevious = columnOffset > 0;
   const canGoNext = columnOffset + COLUMN_PAGE_SIZE < activeColumns.length;
+  const canGoPreviousRows = rowOffset > 0;
+  const canGoNextRows = Boolean(result) && result.rows.length === ROW_PAGE_SIZE;
 
   useEffect(() => {
     function onClickOutside(event) {
@@ -55,7 +75,41 @@ export default function App() {
     return { columns, names };
   }
 
-  async function renderData(url, columnsToRender) {
+  function isStringDtype(dtype) {
+    const normalized = String(dtype || "").toLowerCase();
+    return (
+      normalized.includes("string") ||
+      normalized.includes("utf8") ||
+      normalized.includes("varchar") ||
+      normalized.includes("text")
+    );
+  }
+
+  function buildFiltersForRequest(selectedColumns, filtersByColumn) {
+    const selectedSet = new Set(selectedColumns);
+    const filters = {};
+    Object.keys(filtersByColumn).forEach((columnName) => {
+      if (!selectedSet.has(columnName)) {
+        return;
+      }
+      const rawValue = filtersByColumn[columnName];
+      if (typeof rawValue !== "string") {
+        return;
+      }
+      const trimmed = rawValue.trim();
+      if (!trimmed) {
+        return;
+      }
+
+      const columnMeta = schemaByName[columnName];
+      if (columnMeta && isStringDtype(columnMeta.dtype)) {
+        filters[columnName] = trimmed;
+      }
+    });
+    return filters;
+  }
+
+  async function renderData(url, columnsToRender, filtersToApply, offsetRows) {
     const trimmedUrl = url.trim();
     if (!trimmedUrl || columnsToRender.length === 0) {
       return null;
@@ -66,8 +120,10 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         parquet_url: trimmedUrl,
-        max_rows: 50,
+        max_rows: ROW_PAGE_SIZE,
+        row_offset: offsetRows,
         columns: columnsToRender,
+        filters: filtersToApply,
         format: "json_columns"
       })
     });
@@ -84,22 +140,29 @@ export default function App() {
     return columnsToRender.slice(offset, offset + COLUMN_PAGE_SIZE);
   }
 
-  async function renderPage(url, columnsToRender, offset) {
-    const visibleColumns = getVisibleColumns(columnsToRender, offset);
-    const data = await renderData(url, visibleColumns);
+  async function renderPage(url, columnsToRender, filtersToApply, offsetColumns, offsetRows) {
+    const visibleColumns = getVisibleColumns(columnsToRender, offsetColumns);
+    const data = await renderData(url, visibleColumns, filtersToApply, offsetRows);
     if (!data) {
       setResult(null);
-      return;
+      return 0;
     }
 
     const rows = toRows(data, visibleColumns);
+    if (rows.length === 0 && offsetRows > 0) {
+      return 0;
+    }
+
     setResult({
       columns: visibleColumns,
       rows,
       totalColumns: columnsToRender.length,
-      startIndex: offset,
-      endIndex: offset + visibleColumns.length,
+      startIndex: offsetColumns,
+      endIndex: offsetColumns + visibleColumns.length,
+      rowStart: rows.length > 0 ? offsetRows + 1 : 0,
+      rowEnd: offsetRows + rows.length,
     });
+    return rows.length;
   }
 
   function toRows(columnarData, columns) {
@@ -120,14 +183,54 @@ export default function App() {
   }
 
   function toggleColumn(name) {
-    setDraftSelectedColumns((previous) =>
-      previous.includes(name)
-        ? previous.filter((item) => item !== name)
-        : [...previous, name]
-    );
+    setDraftSelectedColumns((previous) => {
+      if (!previous.includes(name)) {
+        return [...previous, name];
+      }
+
+      setDraftFilterValues((prevFilters) => {
+        const next = { ...prevFilters };
+        delete next[name];
+        return next;
+      });
+      setAppliedFilterValues((prevFilters) => {
+        const next = { ...prevFilters };
+        delete next[name];
+        return next;
+      });
+      setActiveFilters((prevFilters) => {
+        const next = { ...prevFilters };
+        delete next[name];
+        return next;
+      });
+
+      return previous.filter((item) => item !== name);
+    });
   }
 
-  async function handleRenderClick() {
+  function handleSelectAll() {
+    setDraftSelectedColumns(allColumnNames);
+  }
+
+  function handleSelectNone() {
+    setDraftSelectedColumns([]);
+    setDraftFilterValues({});
+    setAppliedFilterValues({});
+    setActiveFilters({});
+  }
+
+  function handleClearAllFilters() {
+    setDraftFilterValues({});
+  }
+
+  function updateDraftFilter(name, value) {
+    setDraftFilterValues((previous) => ({
+      ...previous,
+      [name]: value,
+    }));
+  }
+
+  async function handleRenderClick(closeDropdown = true) {
     const trimmedUrl = parquetUrl.trim();
     if (!trimmedUrl) {
       setError("Paste a parquet URL first.");
@@ -142,10 +245,15 @@ export default function App() {
       if (loadedSchemaUrlRef.current !== trimmedUrl || schemaColumns.length === 0) {
         const schemaPayload = await fetchSchema(trimmedUrl);
         setSchemaColumns(schemaPayload.columns);
-        setDraftSelectedColumns(schemaPayload.names);
-        columnsToRender = schemaPayload.names;
+        const sortedNames = [...schemaPayload.names].sort(compareColumnNames);
+        setDraftSelectedColumns(sortedNames);
+        setDraftFilterValues({});
+        setAppliedFilterValues({});
+        columnsToRender = sortedNames;
         loadedSchemaUrlRef.current = trimmedUrl;
       }
+
+      columnsToRender = [...columnsToRender].sort(compareColumnNames);
 
       if (columnsToRender.length === 0) {
         setError("Select at least one column.");
@@ -155,13 +263,27 @@ export default function App() {
 
       setActiveParquetUrl(trimmedUrl);
       setActiveColumns(columnsToRender);
+      const filtersToApply = buildFiltersForRequest(columnsToRender, draftFilterValues);
+      setAppliedFilterValues({ ...draftFilterValues });
+      setActiveFilters(filtersToApply);
       setColumnOffset(0);
-      await renderPage(trimmedUrl, columnsToRender, 0);
+      setRowOffset(0);
+      await renderPage(trimmedUrl, columnsToRender, filtersToApply, 0, 0);
+      if (closeDropdown) {
+        setDropdownOpen(false);
+      }
     } catch (err) {
       setError(err.message || "Failed to render");
     } finally {
       setRendering(false);
     }
+  }
+
+  async function handleApplyClick() {
+    if (rendering) {
+      return;
+    }
+    await handleRenderClick(false);
   }
 
   async function handleNextColumns() {
@@ -177,7 +299,7 @@ export default function App() {
     setError("");
     try {
       setColumnOffset(nextOffset);
-      await renderPage(activeParquetUrl, activeColumns, nextOffset);
+      await renderPage(activeParquetUrl, activeColumns, activeFilters, nextOffset, rowOffset);
     } catch (err) {
       setError(err.message || "Failed to render");
     } finally {
@@ -195,7 +317,47 @@ export default function App() {
     setError("");
     try {
       setColumnOffset(nextOffset);
-      await renderPage(activeParquetUrl, activeColumns, nextOffset);
+      await renderPage(activeParquetUrl, activeColumns, activeFilters, nextOffset, rowOffset);
+    } catch (err) {
+      setError(err.message || "Failed to render");
+    } finally {
+      setRendering(false);
+    }
+  }
+
+  async function handleNextRows() {
+    if (!canGoNextRows || rendering) {
+      return;
+    }
+
+    const nextRowOffset = rowOffset + ROW_PAGE_SIZE;
+    setRendering(true);
+    setError("");
+    try {
+      const rowCount = await renderPage(activeParquetUrl, activeColumns, activeFilters, columnOffset, nextRowOffset);
+      if (rowCount === 0) {
+        setError("No more rows.");
+        return;
+      }
+      setRowOffset(nextRowOffset);
+    } catch (err) {
+      setError(err.message || "Failed to render");
+    } finally {
+      setRendering(false);
+    }
+  }
+
+  async function handlePreviousRows() {
+    if (!canGoPreviousRows || rendering) {
+      return;
+    }
+
+    const nextRowOffset = Math.max(0, rowOffset - ROW_PAGE_SIZE);
+    setRendering(true);
+    setError("");
+    try {
+      await renderPage(activeParquetUrl, activeColumns, activeFilters, columnOffset, nextRowOffset);
+      setRowOffset(nextRowOffset);
     } catch (err) {
       setError(err.message || "Failed to render");
     } finally {
@@ -219,11 +381,15 @@ export default function App() {
               setParquetUrl(e.target.value);
               setSchemaColumns([]);
               setDraftSelectedColumns([]);
+              setDraftFilterValues({});
+              setAppliedFilterValues({});
               setResult(null);
               setError("");
               setActiveParquetUrl("");
               setActiveColumns([]);
+              setActiveFilters({});
               setColumnOffset(0);
+              setRowOffset(0);
               loadedSchemaUrlRef.current = "";
             }}
           />
@@ -247,19 +413,53 @@ export default function App() {
 
           {dropdownOpen && (
             <div className="columns-dropdown">
+              <div className="columns-actions">
+                <button type="button" onClick={handleSelectAll} disabled={rendering || totalCount === 0}>
+                  Select all
+                </button>
+                <button type="button" onClick={handleSelectNone} disabled={rendering || totalCount === 0}>
+                  Select none
+                </button>
+                <button type="button" onClick={handleClearAllFilters} disabled={rendering || totalCount === 0}>
+                  Clear all filters
+                </button>
+                <button type="button" className="apply-button" onClick={handleApplyClick} disabled={renderDisabled}>
+                  Apply
+                </button>
+              </div>
               <div className="columns-list">
-                {schemaColumns.map((column) => {
-                  const selected = draftSelectedColumns.includes(column.name);
+                <div className="columns-table-header">
+                  <span>Select</span>
+                  <span>Column</span>
+                  <span>Filter</span>
+                </div>
+                {sortedSchemaColumns.map((column) => {
+                  const selected = selectedColumnsSet.has(column.name);
+                  const stringColumn = isStringDtype(column.dtype);
+                  const draftFilter = draftFilterValues[column.name] || "";
+                  const appliedFilter = appliedFilterValues[column.name] || "";
+                  const pendingFilter = draftFilter !== appliedFilter;
 
                   return (
                     <div key={column.name} className={`columns-item${selected ? " is-selected" : ""}`}>
                       <input
+                        className="columns-checkbox"
                         type="checkbox"
                         checked={selected}
                         onChange={() => toggleColumn(column.name)}
                         aria-label={`Select column ${column.name}`}
                       />
-                      <span className="columns-name">{column.name}</span>
+                      <div className="columns-main">
+                        <span className="columns-name">{column.name}</span>
+                      </div>
+                      <input
+                        type="text"
+                        className={`column-filter-input${pendingFilter ? " is-pending" : ""}`}
+                        value={draftFilter}
+                        onChange={(event) => updateDraftFilter(column.name, event.target.value)}
+                        placeholder={stringColumn ? "Contains text" : "Filter not implemented"}
+                        disabled={!selected || !stringColumn || rendering}
+                      />
                     </div>
                   );
                 })}
@@ -272,15 +472,25 @@ export default function App() {
         {result && (
           <div className="meta-row">
             <div className="meta">
-              Showing {result.rows.length} rows, columns {result.startIndex + 1}-{result.endIndex} of {result.totalColumns}
+              Showing rows {result.rowStart}-{result.rowEnd}, columns {result.startIndex + 1}-{result.endIndex} of {result.totalColumns}
             </div>
-            <div className="column-pager">
+            <div className="viewer-pagers">
+              <div className="row-pager">
+                <button type="button" onClick={handlePreviousRows} disabled={!canGoPreviousRows || rendering}>
+                  Up
+                </button>
+                <button type="button" onClick={handleNextRows} disabled={!canGoNextRows || rendering}>
+                  Down
+                </button>
+              </div>
+              <div className="column-pager">
               <button type="button" onClick={handlePreviousColumns} disabled={!canGoPrevious || rendering}>
                 &lt; Previous
               </button>
               <button type="button" onClick={handleNextColumns} disabled={!canGoNext || rendering}>
                 Next &gt;
               </button>
+              </div>
             </div>
           </div>
         )}

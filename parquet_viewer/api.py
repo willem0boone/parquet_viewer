@@ -13,6 +13,7 @@ from .view_service_beta import DuckDBViewService
 class ViewRequest(BaseModel):
     parquet_url: str = Field(..., min_length=1)
     max_rows: int = Field(default=25, ge=1, le=200)
+    row_offset: int = Field(default=0, ge=0)
     columns: list[str] | None = None
     filters: dict[str, str] | None = None
 
@@ -77,6 +78,7 @@ def get_view_endpoint(request: ViewRequest) -> dict[str, Any]:
             columns=request.columns,
             filters=request.filters,
             max_rows=request.max_rows,
+            row_offset=request.row_offset,
         )
         columnar_data = {
             column_name: table.column(column_name).to_pylist()

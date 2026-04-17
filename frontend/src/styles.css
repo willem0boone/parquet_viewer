@@ -43,7 +43,7 @@ h1 {
   white-space: nowrap;
 }
 
-input[type="text"] {
+.form-row input[type="text"] {
   flex: 1;
   padding: 10px;
   border: 1px solid #cbd5e1;
@@ -92,18 +92,59 @@ button:disabled {
   overflow: hidden;
 }
 
+.columns-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.columns-actions button {
+  padding: 6px 10px;
+  background: #334155;
+  font-size: 0.82rem;
+}
+
+.columns-actions .apply-button {
+  background: #047857;
+}
+
 .columns-list {
   max-height: 320px;
   overflow: auto;
 }
 
+.columns-table-header {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #64748b;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f8fafc;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
 .columns-item {
   display: grid;
-  grid-template-columns: 18px 1.4fr 1fr;
+  grid-template-columns: 70px minmax(0, 1.2fr) minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   padding: 8px 10px;
   border-bottom: 1px solid #f1f5f9;
+}
+
+.columns-checkbox {
+  width: 18px;
+  height: 18px;
+  justify-self: center;
 }
 
 .columns-item.is-selected {
@@ -111,24 +152,34 @@ button:disabled {
 }
 
 .columns-name {
+  display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.columns-main {
+  min-width: 0;
+}
+
 .column-filter-input {
   width: 100%;
   min-width: 0;
-  padding: 7px 8px;
+  padding: 6px 8px;
   border: 1px solid #cbd5e1;
   border-radius: 4px;
-  font-size: 0.85rem;
+  font-size: 0.82rem;
 }
 
 .column-filter-input:disabled {
   background: #f8fafc;
   color: #94a3b8;
+}
+
+.column-filter-input.is-pending {
+  color: #1d4ed8;
+  border-color: #93c5fd;
 }
 
 .columns-footnote {
@@ -164,6 +215,22 @@ button:disabled {
 .column-pager button {
   padding: 7px 10px;
   background: #1f2937;
+}
+
+.viewer-pagers {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.row-pager {
+  display: flex;
+  gap: 8px;
+}
+
+.row-pager button {
+  padding: 7px 10px;
+  background: #0f766e;
 }
 
 .table-panel {
@@ -207,6 +274,7 @@ td {
   z-index: 3;
   background: #f3f4f6;
 }
+
 
 
 .empty-state {
