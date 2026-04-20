@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .view_service_beta import DuckDBViewService
@@ -40,6 +43,9 @@ class ViewResponse(BaseModel):
 
 
 app = FastAPI(title="Parquet Viewer API")
+
+FRONTEND_DIST_DIR = Path(__file__).resolve().parent.parent / "frontend_dist"
+FRONTEND_INDEX_FILE = FRONTEND_DIST_DIR / "index.html"
 
 # Minimal local dev CORS for the React app.
 app.add_middleware(
@@ -105,6 +111,41 @@ def get_schema_endpoint(request: SchemaRequest) -> dict[str, list[dict[str, str]
         return {"columns": columns}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _frontend_file_for_path(full_path: str) -> Path | None:
+    if not FRONTEND_DIST_DIR.exists():
+        return None
+    requested = (FRONTEND_DIST_DIR / full_path).resolve()
+    # Keep file serving constrained to the built frontend directory.
+    if FRONTEND_DIST_DIR.resolve() not in requested.parents and requested != FRONTEND_DIST_DIR.resolve():
+        return None
+    if requested.is_file():
+        return requested
+    return None
+
+
+if FRONTEND_DIST_DIR.exists():
+    assets_dir = FRONTEND_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+
+@app.get("/", include_in_schema=False)
+def serve_frontend_root() -> FileResponse:
+    if FRONTEND_INDEX_FILE.exists():
+        return FileResponse(FRONTEND_INDEX_FILE)
+    raise HTTPException(status_code=404, detail="Frontend build not found")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def serve_frontend_files(full_path: str) -> FileResponse:
+    file_path = _frontend_file_for_path(full_path)
+    if file_path is not None:
+        return FileResponse(file_path)
+    if FRONTEND_INDEX_FILE.exists():
+        return FileResponse(FRONTEND_INDEX_FILE)
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 if __name__ == "__main__":
